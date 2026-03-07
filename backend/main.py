@@ -1,19 +1,20 @@
 import asyncio
 import uuid
 import json
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
-from dotenv import load_dotenv
 
 from models.schemas import EvolveRequest, EvolveResponse, ResultsResponse
 from agent.graph import app as evolution_app
 
-load_dotenv()
+app = FastAPI(title="Creative Evolution Engine")
 
-api = FastAPI(title="Creative Evolution Engine")
-
-api.add_middleware(
+app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
@@ -24,7 +25,7 @@ api.add_middleware(
 runs: dict = {}
 
 
-@api.post("/api/evolve", response_model=EvolveResponse)
+@app.post("/api/evolve", response_model=EvolveResponse)
 async def evolve(request: EvolveRequest):
     run_id = str(uuid.uuid4())[:8]
     runs[run_id] = {"status": "running", "events": [], "result": None}
@@ -73,7 +74,7 @@ def _serialize(obj):
     return obj
 
 
-@api.get("/api/stream/{run_id}")
+@app.get("/api/stream/{run_id}")
 async def stream(run_id: str):
     if run_id not in runs:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -93,7 +94,7 @@ async def stream(run_id: str):
     return EventSourceResponse(event_generator())
 
 
-@api.get("/api/results/{run_id}")
+@app.get("/api/results/{run_id}")
 async def results(run_id: str):
     if run_id not in runs:
         raise HTTPException(status_code=404, detail="Run not found")

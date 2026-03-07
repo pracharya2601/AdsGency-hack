@@ -98,6 +98,10 @@ Use the `Agent` tool to delegate tasks that would otherwise bloat the main conte
 - Scope the output: "Return only the function signatures and a one-line description each"
 - For CLAUDE.md updates: "Read the git diff of staged changes, then read CLAUDE.md, and output only the Edit tool calls needed to keep CLAUDE.md in sync"
 
+## Detailed Flow
+
+See `.claude/flow.md` for the complete request lifecycle — covers every node's input/output, scoring rules, SSE event sequence, LLM call summary, and serialization notes.
+
 ## Skills Reference
 
 Tech-specific patterns and snippets are in `.claude/skills/`:

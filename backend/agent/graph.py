@@ -11,7 +11,11 @@ def should_continue(state: EvolutionState) -> str:
     # Check fitness plateau: if last 2 generations have delta < 0.5, stop
     history = state.get("history", [])
     if len(history) >= 2:
-        delta = abs(history[-1].avg_fitness - history[-2].avg_fitness)
+        h1 = history[-1] if isinstance(history[-1], dict) else history[-1].model_dump() if hasattr(history[-1], 'model_dump') else {"avg_fitness": 0}
+        h2 = history[-2] if isinstance(history[-2], dict) else history[-2].model_dump() if hasattr(history[-2], 'model_dump') else {"avg_fitness": 0}
+        avg1 = h1["avg_fitness"] if isinstance(h1, dict) else h1.avg_fitness
+        avg2 = h2["avg_fitness"] if isinstance(h2, dict) else h2.avg_fitness
+        delta = abs(avg1 - avg2)
         if delta < 0.5:
             return "report"
 

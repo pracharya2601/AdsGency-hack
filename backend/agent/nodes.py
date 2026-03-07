@@ -9,6 +9,20 @@ client = AsyncOpenAI()
 MODEL = "gpt-4o"
 
 
+def _ensure_variant(v) -> AdVariant:
+    """Convert dict to AdVariant if needed (LangGraph deserializes between nodes)."""
+    if isinstance(v, AdVariant):
+        return v
+    return AdVariant(**v)
+
+
+def _ensure_log(log) -> GenerationLog:
+    """Convert dict to GenerationLog if needed."""
+    if isinstance(log, GenerationLog):
+        return log
+    return GenerationLog(**log)
+
+
 async def generate_node(state: EvolutionState) -> dict:
     """Generate 5 ad copy variants from the brief + mutation instructions."""
     generation = state.get("generation", 1)
@@ -39,15 +53,32 @@ Generation: {generation}
     )
 
     raw = json.loads(response.choices[0].message.content)
-    # Handle both {"variants": [...]} and direct array
-    items = raw if isinstance(raw, list) else raw.get("variants", raw.get("ads", list(raw.values())[0]))
+    # Extract the list of variants from various possible response shapes
+    items = None
+    if isinstance(raw, list):
+        items = raw
+    else:
+        for key in ("variants", "ads", "ad_variants", "copies"):
+            if key in raw and isinstance(raw[key], list):
+                items = raw[key]
+                break
+        if items is None:
+            # Find the first list value in the response
+            for v in raw.values():
+                if isinstance(v, list):
+                    items = v
+                    break
+        if items is None:
+            items = []
 
     variants = []
     for item in items[:5]:
+        if isinstance(item, str):
+            continue
         variant = AdVariant(
-            headline=item["headline"],
-            body=item["body"],
-            cta=item["cta"],
+            headline=item.get("headline", "Untitled"),
+            body=item.get("body", ""),
+            cta=item.get("cta", "Learn More"),
             emotional_tone=item.get("emotional_tone", "neutral"),
             hook_type=item.get("hook_type", "statement"),
             generation=generation,
@@ -59,13 +90,15 @@ Generation: {generation}
 
 async def score_node(state: EvolutionState) -> dict:
     """Score each variant using rule-based fitness function."""
-    scored = [compute_fitness(v) for v in state["variants"]]
+    variants = [_ensure_variant(v) for v in state["variants"]]
+    scored = [compute_fitness(v) for v in variants]
     return {"variants": scored}
 
 
 async def select_node(state: EvolutionState) -> dict:
     """Select top 2 survivors, log the generation."""
-    variants = sorted(state["variants"], key=lambda v: v.fitness_score, reverse=True)
+    variants = [_ensure_variant(v) for v in state["variants"]]
+    variants = sorted(variants, key=lambda v: v.fitness_score, reverse=True)
 
     survivors = variants[:2]
     for v in survivors:
@@ -81,7 +114,7 @@ async def select_node(state: EvolutionState) -> dict:
         avg_fitness=round(avg_fitness, 2),
     )
 
-    history = list(state.get("history", []))
+    history = [_ensure_log(h) for h in state.get("history", [])]
     history.append(log)
 
     return {"variants": variants, "survivors": survivors, "history": history}
@@ -89,8 +122,8 @@ async def select_node(state: EvolutionState) -> dict:
 
 async def reflect_node(state: EvolutionState) -> dict:
     """Analyze winners vs losers and produce a hypothesis."""
-    survivors = state["survivors"]
-    variants = state["variants"]
+    survivors = [_ensure_variant(v) for v in state["survivors"]]
+    variants = [_ensure_variant(v) for v in state["variants"]]
     losers = [v for v in variants if not v.survived]
 
     system_prompt = """You are an advertising strategist analyzing A/B test results.
@@ -125,7 +158,7 @@ Return JSON: {"hypothesis": "your hypothesis here"}"""
 
 async def mutate_node(state: EvolutionState) -> dict:
     """Prepare mutation instructions for the next generation."""
-    survivors = state["survivors"]
+    survivors = [_ensure_variant(v) for v in state["survivors"]]
     hypothesis = state["hypothesis"]
 
     survivor_traits = "\n".join(
@@ -149,13 +182,14 @@ For the next generation:
 
 async def report_node(state: EvolutionState) -> dict:
     """Generate a final strategy report after all generations complete."""
-    history = state.get("history", [])
+    history = [_ensure_log(h) for h in state.get("history", [])]
 
     history_text = ""
     for log in history:
+        log_variants = [_ensure_variant(v) for v in log.variants]
         history_text += f"\nGeneration {log.generation} (avg fitness: {log.avg_fitness}):\n"
         history_text += f"  Hypothesis: {log.hypothesis}\n"
-        for v in log.variants:
+        for v in log_variants:
             marker = " [SURVIVOR]" if v.id in log.survivors else ""
             history_text += f"  - {v.headline} (fitness: {v.fitness_score}){marker}\n"
 
