@@ -1,5 +1,5 @@
-from typing import TypedDict, List
-from models.schemas import AdVariant, GenerationLog
+from typing import TypedDict, List, Dict
+from models.schemas import AdVariant, GenerationLog, Strategy
 
 
 class EvolutionState(TypedDict):
@@ -13,4 +13,5 @@ class EvolutionState(TypedDict):
     hypothesis: str
     mutation_instructions: str
     history: List[GenerationLog]
+    strategies: Dict[str, Strategy]     # Named strategies discovered so far
     strategy_report: str

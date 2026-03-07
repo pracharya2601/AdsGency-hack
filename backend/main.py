@@ -46,6 +46,7 @@ async def _run_evolution(run_id: str, request: EvolveRequest):
         "hypothesis": "",
         "mutation_instructions": "",
         "history": [],
+        "strategies": {},
         "strategy_report": "",
     }
 
@@ -60,7 +61,7 @@ async def _run_evolution(run_id: str, request: EvolveRequest):
         runs[run_id]["events"].append({"node": "done", "data": {}})
     except Exception as e:
         runs[run_id]["status"] = "error"
-        runs[run_id]["events"].append({"node": "error", "data": {"message": str(e)}})
+        runs[run_id]["events"].append({"node": "server_error", "data": {"message": str(e)}})
 
 
 def _serialize(obj):
@@ -87,7 +88,7 @@ async def stream(run_id: str):
                 event = events[sent]
                 yield {"event": event["node"], "data": json.dumps(event["data"])}
                 sent += 1
-                if event["node"] in ("done", "error"):
+                if event["node"] in ("done", "server_error"):
                     return
             await asyncio.sleep(0.3)
 

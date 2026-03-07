@@ -1,65 +1,63 @@
 # Creative Evolution Engine — Detailed Flow
 
-## End-to-End Request Lifecycle
+## What This System Does (The Four Pillars)
 
-### Phase 1: User Submits Brief (Frontend)
-
-```
-BriefInput.jsx → App.jsx handleSubmit() → api/client.js startEvolution()
-```
-
-1. User fills the form: product brief, platform (Meta/Google/TikTok/LinkedIn/Twitter), target audience, number of generations (1-10, default 4)
-2. `App.jsx` calls `startEvolution()` which sends `POST /api/evolve` with the payload
-3. App receives `run_id` back and immediately opens an SSE connection via `streamEvents()` to `GET /api/stream/{run_id}`
-4. UI enters "running" state — form disables, status indicator starts pulsing
+| Requirement | How We Solve It | Where |
+|---|---|---|
+| **Generate creative variants** | GPT-4o creates 5 platform-specific ad variants per generation with diverse strategies | `generate_node` |
+| **Evaluate performance signals** | GPT-4o simulates 6 real ad metrics (CTR, engagement, conversion, relevance, platform fit, scroll-stop) | `score_node` → `scoring.py` |
+| **Evolve creatives over time** | Top 2 survive, hypothesis guides mutation, strategy leaderboard informs next generation | `select_node` → `mutate_node` → loop |
+| **Discover new creative strategies** | Each variant gets a named strategy; strategies are tracked, ranked, and reported across generations | `reflect_node` → `report_node` |
 
 ---
 
-### Phase 2: Backend Kicks Off Evolution (FastAPI)
+## End-to-End Request Lifecycle
+
+### Phase 1: User Submits Brief
+
+**Why:** The system needs a starting point — what product, who's the audience, which platform.
+
+```
+BriefInput.jsx → App.jsx handleSubmit() → POST /api/evolve → returns run_id
+                                         → EventSource /api/stream/{run_id}
+```
+
+The frontend immediately opens an SSE connection so it can render results in real-time as each node completes. The form disables to prevent duplicate runs.
+
+---
+
+### Phase 2: Backend Spawns Evolution
+
+**Why:** Evolution takes 30-60 seconds across multiple LLM calls. Running it as a background task lets us return a `run_id` instantly and stream progress via SSE rather than making the user wait for a single giant response.
 
 **File:** `backend/main.py`
 
-```
-POST /api/evolve
-  → Create run_id (8-char UUID)
-  → Store run in memory: { status: "running", events: [], result: None }
-  → Spawn background task: _run_evolution(run_id, request)
-  → Return { run_id } immediately (non-blocking)
-```
-
-**`_run_evolution` builds the initial LangGraph state:**
+Initial LangGraph state:
 ```python
 {
-    "brief": "user's product description",
-    "platform": "Meta",
-    "audience": "target audience text",
-    "max_generations": 4,
-    "generation": 1,
-    "variants": [],
-    "survivors": [],
-    "hypothesis": "",
-    "mutation_instructions": "",
-    "history": [],
-    "strategy_report": ""
+    "brief": "...",  "platform": "Meta",  "audience": "...",
+    "max_generations": 4,  "generation": 1,
+    "variants": [],  "survivors": [],
+    "hypothesis": "",  "mutation_instructions": "",
+    "history": [],  "strategies": {},  "strategy_report": ""
 }
 ```
 
-Then calls `evolution_app.astream(initial_state, stream_mode="updates")` which streams node-by-node output. Each node's output is serialized and appended to `runs[run_id]["events"]`.
+`strategies: {}` is a dict that accumulates named creative strategies discovered across all generations — this is the core of the "discover new strategies" requirement.
 
 ---
 
-### Phase 3: LangGraph Evolution Loop
+### Phase 3: The Evolution Loop
 
-**File:** `backend/agent/graph.py`
-
-The compiled graph executes nodes in this order per generation:
+**Why:** Evolutionary algorithms work by repeated cycles of generation → evaluation → selection → learning → mutation. Each cycle produces better-adapted creatives because it builds on what worked before.
 
 ```
                     ┌─────────────────────────────────────┐
-                    │                                     │
+                    │           EVOLUTION LOOP             │
                     ▼                                     │
    ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
    │ generate │→ │  score   │→ │  select  │→ │ reflect  │→ │  mutate  │
+   │ (LLM)   │  │ (LLM)   │  │ (logic)  │  │ (LLM)   │  │ (logic)  │
    └──────────┘  └──────────┘  └──────────┘  └──────────┘  └────┬─────┘
                                                                  │
                                                          should_continue?
@@ -68,8 +66,8 @@ The compiled graph executes nodes in this order per generation:
                                                     (loop back)        │
                                                                  ┌─────▼─────┐
                                                                  │  report   │
+                                                                 │  (LLM)   │
                                                                  └─────┬─────┘
-                                                                       │
                                                                       END
 ```
 
@@ -77,232 +75,235 @@ The compiled graph executes nodes in this order per generation:
 
 ### Phase 4: Node-by-Node Breakdown
 
-**File:** `backend/agent/nodes.py`
+#### Node 1: `generate_node` — Create the Gene Pool (LLM Call)
 
-#### Node 1: `generate_node` (LLM Call)
+**Why it exists:** This is the "generate creative variants" requirement. Every generation needs fresh creative material. Gen 1 explores widely; Gen 2+ is guided by what survived and what the system learned.
 
-**Input from state:** `brief`, `platform`, `audience`, `generation`, `mutation_instructions`
-**Output:** `{ variants: [5 AdVariant objects] }`
+**What it does:**
+- Calls GPT-4o with `temperature=0.9` (high creativity) to produce 5 ad variants
+- Platform-specific system prompt (Meta = punchy/emoji, Google = keyword-rich, TikTok = casual, LinkedIn = professional, Twitter = ultra-concise)
+- Gen 1: "Create maximally diverse variants" — different tones, hooks, lengths, strategies
+- Gen 2+: Receives `mutation_instructions` from previous generation containing survivor DNA + hypothesis + strategy leaderboard
+- Also passes `strategies` context so the LLM knows what strategies have been tried and their performance history
 
-- **Gen 1:** No mutation instructions exist. Prompt tells GPT-4o to create 5 diverse variants with varied tone, hook style, length, and emotional angle.
-- **Gen 2+:** Mutation instructions from previous generation guide the LLM. Instructions include survivor traits and the hypothesis to apply.
-- **LLM config:** `temperature=0.9` (high creativity), `response_format=json_object`
-- **Response parsing:** Handles multiple JSON shapes — `{"variants": [...]}`, `{"ads": [...]}`, bare arrays, or any key containing a list. Skips string items. Defaults missing fields gracefully.
-- Each variant gets: `id` (auto 8-char UUID), `headline`, `body`, `cta`, `emotional_tone`, `hook_type`, `generation` number
+**Output:** `{ variants: [5 AdVariant objects] }` — each with headline, body, CTA, tone, hook type
 
-#### Node 2: `score_node` (No LLM — Deterministic)
+#### Node 2: `score_node` — Evaluate Performance Signals (LLM Call)
 
-**Input from state:** `variants` (5 AdVariant objects from generate)
-**Output:** `{ variants: [5 scored AdVariant objects] }`
+**Why it exists:** This is the "evaluate performance signals" requirement. Real ads are judged by metrics like CTR, engagement, conversion — not just whether the copy sounds good. Using an LLM to simulate these signals gives us realistic, differentiated evaluations that drive meaningful selection pressure.
 
-**File:** `backend/agent/scoring.py`
+**What it does:**
+- Calls GPT-4o with `temperature=0.3` (analytical) to simulate 6 ad performance signals per variant
+- Also assigns each variant a `creative_strategy` label (e.g. "FOMO Question Hook", "Social Proof Authority")
 
-Scores each variant on 4 dimensions (0-10 scale each):
+**The 6 Performance Signals:**
 
-| Dimension | Weight | What It Measures | Scoring Rules |
-|-----------|--------|------------------|---------------|
-| **Hook** | 30% | Headline attention-grab | +1.5 for question marks, +1.5 for <=5 words, +1.0 for power words (free, secret, now, etc.), -1.0 for >8 words |
-| **CTA** | 25% | Call-to-action clarity | +2.0 for <=3 words, +1.5 for starting with action verb (get, start, try, buy...), +1.0 for urgency words (now, today, limited...) |
-| **Emotion** | 25% | Emotional resonance | +1.5 for strong tones (urgency, fomo, excitement...), +0.75 per emotion marker in body (imagine, feel, love...), capped at +2.0 |
-| **Brevity** | 20% | Tightness of copy | +2.5 for <=15 words, +1.5 for <=25, -1.5 for >40 words, -1.0 per filler phrase detected |
+| Signal | Weight | What It Measures |
+|--------|--------|-----------------|
+| `predicted_ctr` | 20% | Would people click this ad? |
+| `engagement_score` | 15% | Would people like, comment, share? |
+| `conversion_potential` | 20% | Would clickers actually buy/sign up? |
+| `audience_relevance` | 20% | Does this resonate with the specific target audience? |
+| `platform_fit` | 10% | Does this feel native to the platform? |
+| `scroll_stop_power` | 15% | Would this stop someone mid-scroll? |
 
-**Final fitness = weighted sum:**
-```
-fitness = (hook * 0.30) + (cta * 0.25) + (emotion * 0.25) + (brevity * 0.20)
-```
+**Fitness = weighted sum of all 6 signals (0-10 scale)**
 
-All scores clamped to [0, 10].
+**Why LLM-based instead of rule-based:** Rule-based scoring can only measure surface features (word count, keyword presence). LLM evaluation understands semantic meaning — it knows that "Your chaos, organized" is a stronger hook than "Organize your notes" even though both are short.
 
-#### Node 3: `select_node` (No LLM — Selection)
+#### Node 3: `select_node` — Survival of the Fittest (No LLM)
 
-**Input from state:** `variants` (scored), `generation`, `hypothesis`, `history`
-**Output:** `{ variants: [sorted], survivors: [top 2], history: [updated] }`
+**Why it exists:** This is the selection pressure that drives evolution. Without it, there's no improvement — just random generation. By keeping only the top 2 and eliminating the bottom 3, we create a strong signal for what works.
 
-1. Sorts all 5 variants by `fitness_score` descending
-2. Marks top 2 as `survived = True`
+**What it does:**
+1. Sorts all 5 variants by fitness score (descending)
+2. Top 2 marked as `survived = True` — these are the "parents" for the next generation
 3. Computes `avg_fitness` across all 5
-4. Creates a `GenerationLog` entry:
-   ```python
-   GenerationLog(
-       generation=current_gen,
-       variants=all_5_sorted,
-       survivors=[id_of_top_1, id_of_top_2],
-       hypothesis=current_hypothesis,
-       avg_fitness=average
-   )
-   ```
-5. Appends log to `history` array (accumulates across all generations)
+4. **Tracks discovered strategies:** For each variant's `creative_strategy`, either updates an existing strategy's fitness trend or creates a new `Strategy` entry with `first_seen` generation and initial fitness
+5. Creates `GenerationLog` with `strategies_discovered` list
+6. Appends to `history` array
 
-**This is the node whose SSE event triggers the frontend to update** — the `history` array contains all generations so far, which feeds both `GenerationFeed` and `FitnessChart`.
+**Why track strategies here:** This is where we build the strategy leaderboard. Over multiple generations, we can see which named strategies consistently produce high-fitness variants and which ones fail. This is the data that enables "discover new creative strategies."
 
-#### Node 4: `reflect_node` (LLM Call)
+#### Node 4: `reflect_node` — Learn Why Winners Won (LLM Call)
 
-**Input from state:** `survivors` (top 2), `variants` (all 5)
-**Output:** `{ hypothesis: "string" }`
+**Why it exists:** This is the intelligence layer. Raw selection tells us WHAT won, but not WHY. The reflect node uses GPT-4o to analyze the performance signals of winners vs losers and extract a transferable insight — a hypothesis that can guide the next generation.
 
-- Separates winners (survived=True) from losers (survived=False)
-- Sends both to GPT-4o with `temperature=0.4` (analytical, less creative)
-- Prompt: "Compare winning vs losing ads. Identify the specific creative pattern. Output a single concise hypothesis (1-2 sentences) explaining WHY winners won."
-- Example output: `"Short question-hook headlines with FOMO framing and single-word CTAs outperformed benefit-led copy with longer body text."`
-- This hypothesis becomes the strategic direction for the next generation
+**What it does:**
+- Receives winners (top 2) and losers (bottom 3) with their full performance signals
+- Also receives the strategy performance tracker showing all strategies and their fitness trends
+- GPT-4o analyzes the gap and produces:
+  - `hypothesis`: Why winners outperformed losers (1-2 sentences)
+  - `winning_strategy`: Named strategy that's working (e.g. "Urgency Question Hook")
+  - `next_experiment`: What new angle to test next generation
 
-#### Node 5: `mutate_node` (No LLM — Instruction Assembly)
+**Example output:**
+```
+hypothesis: "Question-hook headlines with FOMO framing scored 2.5 points higher on scroll-stop and CTR because they create an open loop the audience needs to close."
+winning_strategy: "FOMO Question Hook"
+next_experiment: "Try social proof angle — testimonial-style hooks to test if authority beats curiosity"
+```
 
-**Input from state:** `survivors`, `hypothesis`, `generation`
-**Output:** `{ mutation_instructions: "string", generation: current + 1 }`
+**Why this matters for strategy discovery:** Each hypothesis chains with the previous one. By Gen 4, the system has accumulated a series of tested hypotheses that together form a discovered creative playbook — something never explicitly programmed.
 
-- Does NOT call the LLM itself
-- Assembles mutation instructions from survivor traits + hypothesis:
-  ```
-  Based on survivors from Generation N:
-  - [Headline] tone=X, hook=Y, scores={...}
-  - [Headline] tone=X, hook=Y, scores={...}
+#### Node 5: `mutate_node` — Breed the Next Generation (No LLM)
 
-  Hypothesis: ...
+**Why it exists:** This bridges generations. It packages everything the system has learned — survivor DNA, the hypothesis, the strategy leaderboard — into clear instructions for the next `generate_node` call. It also ensures diversity by mandating wildcards.
 
-  For the next generation:
-  1. Inherit strongest traits from survivors
-  2. Apply the hypothesis to improve weak dimensions
-  3. Introduce at least 1 deliberate wildcard mutation
-  ```
-- Increments `generation` counter
-- These instructions are consumed by `generate_node` in the next loop iteration
+**What it does:**
+- Assembles mutation instructions containing:
+  - Survivor traits (headline, strategy, tone, hook, performance signals)
+  - The hypothesis from reflect_node
+  - Strategy leaderboard (top 5 strategies ranked by avg fitness)
+- Mandates diversity: "at least 1 variant testing the next experiment, at least 1 wildcard with a completely new strategy"
+- Increments generation counter
+
+**Why mandate wildcards:** Without them, the system converges too quickly on one strategy. The wildcard variant is a deliberate "mutation" — it might fail, but occasionally it discovers something better than the current best, preventing local optima.
 
 ---
 
-### Phase 5: Loop Termination Decision
+### Phase 5: Loop Termination
 
-**File:** `backend/agent/graph.py` → `should_continue()`
-
-After `mutate_node`, the graph evaluates whether to loop or finish:
+**Why two conditions:** We don't want to waste LLM calls on generations that aren't improving. The plateau detection (delta < 0.5 for 2 consecutive generations) catches convergence early.
 
 ```
-if generation > max_generations → "report" (go to report_node)
-if last 2 generations' avg_fitness delta < 0.5 → "report" (plateau detected)
-otherwise → "generate" (loop back for another generation)
+generation > max_generations  →  stop (user-defined limit hit)
+last 2 gens avg_fitness delta < 0.5  →  stop (system has converged)
+otherwise  →  loop back to generate_node
 ```
 
 ---
 
-### Phase 6: Strategy Report Generation
+### Phase 6: Strategy Discovery Report (LLM Call)
 
-**File:** `backend/agent/nodes.py` → `report_node` (LLM Call)
+**Why it exists:** This is the payoff — the system synthesizes everything it discovered into an actionable creative strategy report. This is what makes the system valuable beyond just generating ads: it tells you WHY certain strategies work and WHAT to do next.
 
-- Only runs once, after the loop terminates
-- Reads the full `history` array (all generation logs)
-- Sends the complete evolutionary timeline to GPT-4o with `temperature=0.3` (most analytical)
-- Prompt asks for: (1) the creative strategy that emerged, (2) key fitness improvements, (3) recommended direction going forward
-- Output: `{ strategy_report: "multi-paragraph analysis" }`
+**What it receives:**
+- Complete evolutionary history (all generations, all variants, all scores)
+- Strategy discovery summary (every named strategy, when it was first seen, fitness trend)
 
----
-
-### Phase 7: SSE Streaming to Frontend
-
-**File:** `backend/main.py` → `GET /api/stream/{run_id}`
-
-As each node completes, `_run_evolution` serializes the output and appends to `runs[run_id]["events"]`. The SSE endpoint polls this list every 300ms and yields new events.
-
-**Event flow for a 4-generation run:**
-```
-1.  event: generate    →  { variants: [...] }        ← Gen 1
-2.  event: score       →  { variants: [...scored] }
-3.  event: select      →  { variants, survivors, history }  ← Frontend updates UI
-4.  event: reflect     →  { hypothesis: "..." }
-5.  event: mutate      →  { mutation_instructions, generation: 2 }
-6.  event: generate    →  { variants: [...] }        ← Gen 2
-7.  event: score       →  ...
-8.  event: select      →  ...                        ← Frontend updates UI
-9.  event: reflect     →  ...
-10. event: mutate      →  ...
-... (repeat for Gen 3, 4)
-21. event: report      →  { strategy_report: "..." } ← Frontend shows report
-22. event: done        →  {}                          ← Frontend exits running state
-```
+**What it produces (markdown-formatted):**
+1. **Winning Strategy** — The #1 creative strategy that emerged and why it works
+2. **Strategy Evolution** — How strategies competed and evolved across generations
+3. **Performance Insights** — What drives CTR vs engagement vs conversion for this audience
+4. **Discovered Playbook** — Top 3 strategies ranked, with when to use each
+5. **Next Steps** — Creative directions to explore beyond what was tested
 
 ---
 
-### Phase 8: Frontend Renders Results
+### Phase 7: SSE Streaming
 
-**File:** `frontend/src/App.jsx`
+**Why SSE:** Evolution takes 30-60 seconds. Without streaming, the user stares at a spinner. SSE lets us show each node completing in real-time — the user watches variants appear, get scored, get selected, and sees hypotheses form live.
 
-The `streamEvents` function in `api/client.js` listens for named SSE events:
+**Event sequence for a 4-generation run (27 events):**
+```
+Gen 1:  generate → score → select → reflect → mutate     (5 events)
+Gen 2:  generate → score → select → reflect → mutate     (5 events)
+Gen 3:  generate → score → select → reflect → mutate     (5 events)
+Gen 4:  generate → score → select → reflect → mutate     (5 events)
+Final:  report → done                                     (2 events)
+```
 
-| SSE Event | Frontend Action |
-|-----------|----------------|
-| `select` | `setHistory(data.history)` — updates `GenerationFeed` (variant cards) and `FitnessChart` (line graph) |
-| `report` | `setStrategyReport(data.strategy_report)` — shows `StrategyReport` panel |
-| `done` | `setRunning(false)` — re-enables form, stops pulse indicator |
-| `error` | `setError(message)` — shows red error banner |
-| `generate`, `score`, `reflect`, `mutate` | `setCurrentNode(nodeName)` — updates the pulsing "Running: X" status |
-
-**Component rendering:**
-- `GenerationFeed.jsx` — Renders generations in reverse order (newest first). Each variant is a card showing headline, body, CTA, tone, hook type, fitness score. Survivors get green border + "SURVIVOR" badge. Losers are dimmed.
-- `FitnessChart.jsx` — Recharts `LineChart` with 3 lines: Best (green), Average (blue), Worst (red dashed). X-axis = generation, Y-axis = 0-10 fitness scale.
-- `StrategyReport.jsx` — Indigo-themed panel with the LLM's final strategic analysis, rendered as pre-wrapped text.
+Frontend updates on `select` events (shows variants + chart), `report` event (shows strategy report), and `done` event (re-enables form).
 
 ---
 
-## Data Type Reference
+### Phase 8: Frontend Renders
 
-### EvolutionState (LangGraph shared state)
+**Why this layout:** Left column is controls + analytics (brief input, fitness chart, signal comparison). Right column is the feed — you scroll through generations watching creatives evolve. Strategy report appears at the bottom once done.
+
+| Component | What It Shows | Why |
+|---|---|---|
+| `BriefInput` | Form for brief, platform, audience, generations | Starting point — the "DNA" that seeds generation 1 |
+| `GenerationFeed` | Variant cards with performance signal bars, strategy badges, survivor highlighting | Shows evolution happening — users see which strategies survive and which die |
+| `FitnessChart` | Line chart (best/avg/worst fitness per gen) + bar chart (winners vs losers signal comparison) | Proves the system is actually improving over time, shows WHAT signals differentiate winners |
+| `StrategyReport` | Final markdown report with winning strategy, playbook, next steps | The deliverable — actionable creative intelligence the user can apply |
+
+---
+
+## Data Types
+
+### EvolutionState
 
 ```
-brief               string      Original user brief
-platform            string      Ad platform target
-audience            string      Target audience description
-max_generations     int         How many generations to run
-generation          int         Current generation counter (starts at 1)
-variants            AdVariant[] Current generation's 5 variants
-survivors           AdVariant[] Top 2 from current generation
-hypothesis          string      Reflect node's output
-mutation_instructions string    Instructions for next generate call
-history             GenerationLog[]  Accumulated logs from all generations
-strategy_report     string      Final report (populated by report_node)
+brief                 string              Product/service description
+platform              string              Meta | Google | TikTok | LinkedIn | Twitter/X
+audience              string              Target audience description
+max_generations       int                 User-set limit (1-10)
+generation            int                 Current generation counter
+variants              AdVariant[]         This generation's 5 variants
+survivors             AdVariant[]         Top 2 selected
+hypothesis            string              What the system learned this round
+mutation_instructions string              Instructions for next generate call
+history               GenerationLog[]     All generation logs (accumulates)
+strategies            Dict[str, Strategy] Named strategies discovered (accumulates)
+strategy_report       string              Final report (set by report_node)
 ```
 
 ### AdVariant
 
 ```
-id                  string      8-char UUID
-headline            string      Ad headline
-body                string      Ad body copy
-cta                 string      Call-to-action text
-emotional_tone      string      e.g. "urgency", "curiosity", "fomo"
-hook_type           string      e.g. "question", "statement", "command"
-fitness_score       float       Weighted fitness 0-10
-dimension_scores    dict        { hook, cta, emotion, brevity } each 0-10
-generation          int         Which generation this was created in
-survived            bool        Whether this variant was selected
+id                    string              8-char UUID
+headline              string              Ad headline
+body                  string              Ad body copy
+cta                   string              Call-to-action
+emotional_tone        string              e.g. "urgency", "curiosity"
+hook_type             string              e.g. "question", "social proof"
+creative_strategy     string              Named strategy label (e.g. "FOMO Question Hook")
+fitness_score         float               Weighted fitness 0-10
+dimension_scores      dict                { ctr, engagement, conversion, relevance, platform_fit, scroll_stop }
+performance_signals   PerformanceSignals  Full signal object
+generation            int                 Which generation
+survived              bool                Selected as top 2?
+```
+
+### Strategy
+
+```
+name                  string              Short strategy name (2-5 words)
+description           string              What makes this strategy work
+first_seen            int                 Generation it was first discovered
+fitness_trend         float[]             Best fitness per generation using this strategy
 ```
 
 ### GenerationLog
 
 ```
-generation          int         Generation number
-variants            AdVariant[] All 5 variants (sorted by fitness)
-survivors           string[]    IDs of the top 2
-hypothesis          string      The hypothesis from that generation's reflect
-avg_fitness         float       Average fitness across all 5
+generation            int                 Generation number
+variants              AdVariant[]         All 5 variants (sorted by fitness)
+survivors             string[]            IDs of top 2
+hypothesis            string              The hypothesis from reflect
+avg_fitness           float               Average fitness across all 5
+strategies_discovered string[]            Strategy names seen this generation
 ```
 
 ---
 
 ## LLM Call Summary
 
-| Node | Model | Temperature | Purpose | Response Format |
-|------|-------|-------------|---------|-----------------|
-| `generate_node` | gpt-4o | 0.9 | Create 5 ad variants | JSON object |
-| `reflect_node` | gpt-4o | 0.4 | Analyze winners vs losers | JSON object |
-| `report_node` | gpt-4o | 0.3 | Final strategy analysis | JSON object |
-| `score_node` | — | — | Rule-based, no LLM | — |
-| `select_node` | — | — | Sorting + selection, no LLM | — |
-| `mutate_node` | — | — | String assembly, no LLM | — |
+| Node | Model | Temp | Purpose | Why This Temperature |
+|------|-------|------|---------|---------------------|
+| `generate_node` | gpt-4o | 0.9 | Create 5 ad variants | High creativity — we want diverse, surprising copy |
+| `score_node` | gpt-4o | 0.3 | Simulate 6 performance signals + label strategy | Low temp — evaluation must be consistent and critical |
+| `reflect_node` | gpt-4o | 0.4 | Analyze winners vs losers, produce hypothesis | Slightly creative — needs analytical insight but with some synthesis |
+| `report_node` | gpt-4o | 0.3 | Final strategy discovery report | Low temp — report must be grounded in the data |
+| `select_node` | — | — | Sort + select top 2 + track strategies | Pure logic, no LLM needed |
+| `mutate_node` | — | — | Assemble mutation instructions | String assembly, no LLM needed |
 
-**Total LLM calls per generation:** 2 (generate + reflect)
-**Total LLM calls for a 4-gen run:** 2 * 4 + 1 (report) = **9 calls**
+**Total LLM calls per generation:** 3 (generate + score + reflect)
+**Total LLM calls for a 4-gen run:** 3 * 4 + 1 (report) = **13 calls**
 
 ---
 
-## Serialization Note
+## Why Each Piece Matters
 
-LangGraph serializes state between nodes, converting Pydantic models to plain dicts. Every node uses `_ensure_variant()` and `_ensure_log()` helpers to reconstitute `AdVariant` / `GenerationLog` objects from dicts before accessing attributes. This is critical — without it, attribute access like `v.headline` fails on dict objects.
+```
+generate  →  Without variants, there's nothing to evaluate
+score     →  Without performance signals, selection is random
+select    →  Without selection pressure, there's no improvement
+reflect   →  Without learning, each generation starts blind
+mutate    →  Without directed mutation, evolution is just random search
+report    →  Without synthesis, the discoveries stay implicit
+```
+
+The power is in the loop. Any single generation is just "GPT writes some ads." But 4 generations with selection, learning, and mutation turns it into a system that **discovers creative strategies it was never taught** — because it competed its way there.
