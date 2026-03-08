@@ -1,6 +1,166 @@
 @import "tailwindcss";
 
+:root {
+  --bg-primary: #0b0e17;
+  --bg-card: #131825;
+  --bg-card-hover: #1a2035;
+  --border-subtle: #1e2a3a;
+  --border-medium: #2a3548;
+  --text-primary: #e8ecf4;
+  --text-secondary: #8b95a8;
+  --text-muted: #5a6478;
+  --accent-cyan: #22d3ee;
+  --accent-purple: #a78bfa;
+  --accent-yellow: #fbbf24;
+  --accent-green: #34d399;
+  --accent-red: #f87171;
+  --accent-orange: #fb923c;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-medium);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Dark theme form elements */
+select, input[type="text"], input[type="number"] {
+  background-color: var(--bg-primary) !important;
+  border-color: var(--border-medium) !important;
+  color: var(--text-primary) !important;
+}
+select option {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
+}
+
+/* Interactive card hover lift */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(34, 211, 238, 0.1);
+}
+
+/* Metric card interactive hover */
+.metric-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  cursor: default;
+}
+.metric-hover:hover {
+  transform: scale(1.04);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+/* Animated signal bar fill */
+.signal-fill {
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Skeleton shimmer */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--border-subtle) 25%, var(--border-medium) 50%, var(--border-subtle) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+/* Pulse glow on active node step */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(34, 211, 238, 0.4); }
+  50% { box-shadow: 0 0 8px 2px rgba(34, 211, 238, 0.3); }
+}
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Smooth collapse/expand */
+.collapse-content {
+  animation: slideDown 0.3s ease-out;
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Modal backdrop */
+.modal-backdrop {
+  animation: fadeIn 0.2s ease-out;
+}
+.modal-content {
+  animation: slideUp 0.25s ease-out;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Image loading fade-in */
+.img-loaded {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Interactive button press */
+.btn-interactive {
+  transition: transform 0.1s ease, box-shadow 0.2s ease;
+}
+.btn-interactive:hover {
+  box-shadow: 0 0 20px rgba(34, 211, 238, 0.25);
+}
+.btn-interactive:active {
+  transform: scale(0.97);
+}
+
+/* Tooltip */
+.tooltip-trigger {
+  position: relative;
+}
+.tooltip-trigger .tooltip-text {
+  visibility: hidden;
+  opacity: 0;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  white-space: nowrap;
+  background: var(--bg-card);
+  border: 1px solid var(--border-medium);
+  color: var(--text-primary);
+  z-index: 50;
+  transition: opacity 0.15s ease, visibility 0.15s ease;
+  pointer-events: none;
+}
+.tooltip-trigger:hover .tooltip-text {
+  visibility: visible;
+  opacity: 1;
 }
